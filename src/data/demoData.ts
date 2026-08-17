@@ -1,4 +1,5 @@
 import { DataSource, CanonicalFieldDefinition } from '../types';
+import { ADDITIONAL_DEMO_SOURCES } from './moreDatasets';
 
 export const CANONICAL_FIELDS: CanonicalFieldDefinition[] = [
   {
@@ -420,4 +421,5 @@ export const INITIAL_DEMO_SOURCES: DataSource[] = [
       { 'Organization Name': 'Trusting Social', 'Attendee Name': 'Lê Minh Hải', 'Corporate Email': 'hai.le@trustingsocial.com', 'Role / Position': 'AI Guest Speaker', 'Event Title': 'Global Cloud & AI Forum 2026' },
     ],
   },
+  ...ADDITIONAL_DEMO_SOURCES,
 ];

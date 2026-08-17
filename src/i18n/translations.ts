@@ -62,7 +62,7 @@ export const translations = {
     samplePreview: 'Sample Data Preview',
     noSourcesYet: 'No data sources connected yet.',
     demoDataLoaded: 'Pre-loaded Demo Datasets',
-    demoNotice: '5 sample Google Sheets pre-loaded (Vietnamese headers, English headers, Fintech, Cloud AI)',
+    demoNotice: '7 comprehensive event datasets pre-loaded (AI Summit, Startup Day, DX Workshop, Fintech, Cloud AI, Cybersecurity, BioTech)',
     loadDemoAction: 'Reload Demo Data',
 
     // AI Normalize
@@ -212,8 +212,8 @@ export const translations = {
     connectedSources: 'Các bộ dữ liệu đã kết nối',
     samplePreview: 'Xem trước dữ liệu mẫu',
     noSourcesYet: 'Chưa có nguồn dữ liệu nào được kết nối.',
-    demoDataLoaded: 'Các bộ dữ liệu mẫu có sẵn',
-    demoNotice: '5 mẫu Google Sheets có sẵn (Tiêu đề Tiếng Việt, Tiếng Anh, Tài chính Fintech, Điện toán đám mây AI)',
+    demoDataLoaded: 'Các bộ dữ liệu mẫu phong phú có sẵn',
+    demoNotice: '7 mẫu Google Sheets đa ngành nghề có sẵn (AI Summit, Startup Day, Hội thảo CĐS, Fintech Banking, Cloud AI Forum, An ninh mạng Zero Trust, Y tế & BioTech)',
     loadDemoAction: 'Tải lại dữ liệu mẫu',
 
     // AI Normalize
