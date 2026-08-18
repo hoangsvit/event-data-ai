@@ -86,6 +86,7 @@ function openDatabase(): Promise<IDBDatabase> {
 export async function loadWorkspaceFromIndexedDb(): Promise<PersistedWorkspace | null> {
   const db = await openDatabase();
   const transaction = db.transaction([SOURCES_STORE, MAPPINGS_STORE, META_STORE], 'readonly');
+  const transactionDone = transactionToPromise(transaction);
 
   const sourcesRequest = transaction.objectStore(SOURCES_STORE).getAll();
   const mappingsRequest = transaction.objectStore(MAPPINGS_STORE).getAll();
@@ -97,7 +98,7 @@ export async function loadWorkspaceFromIndexedDb(): Promise<PersistedWorkspace |
     requestToPromise(metaRequest),
   ]);
 
-  await transactionToPromise(transaction);
+  await transactionDone;
 
   if (!sources.length) return null;
 
@@ -115,6 +116,7 @@ export async function loadWorkspaceFromIndexedDb(): Promise<PersistedWorkspace |
 async function writeWorkspace(workspace: PersistedWorkspace): Promise<void> {
   const db = await openDatabase();
   const transaction = db.transaction([SOURCES_STORE, MAPPINGS_STORE, META_STORE], 'readwrite');
+  const transactionDone = transactionToPromise(transaction);
   const sourcesStore = transaction.objectStore(SOURCES_STORE);
   const mappingsStore = transaction.objectStore(MAPPINGS_STORE);
   const metaStore = transaction.objectStore(META_STORE);
@@ -140,7 +142,7 @@ async function writeWorkspace(workspace: PersistedWorkspace): Promise<void> {
   };
   metaStore.put(meta);
 
-  await transactionToPromise(transaction);
+  await transactionDone;
 }
 
 export function saveWorkspaceToIndexedDb(workspace: PersistedWorkspace): Promise<void> {
@@ -154,10 +156,11 @@ export function saveWorkspaceToIndexedDb(workspace: PersistedWorkspace): Promise
 export async function clearWorkspaceFromIndexedDb(): Promise<void> {
   const db = await openDatabase();
   const transaction = db.transaction([SOURCES_STORE, MAPPINGS_STORE, META_STORE], 'readwrite');
+  const transactionDone = transactionToPromise(transaction);
 
   transaction.objectStore(SOURCES_STORE).clear();
   transaction.objectStore(MAPPINGS_STORE).clear();
   transaction.objectStore(META_STORE).clear();
 
-  await transactionToPromise(transaction);
+  await transactionDone;
 }
