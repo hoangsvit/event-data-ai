@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { ChatMessage, NormalizedRecord } from '../../types';
 import { useLanguage } from '../../context/LanguageContext';
+import { answerQuestionLocally } from '../../utils/localAskEngine';
 import { FormattedAiResponse } from '../FormattedAiResponse';
 
 interface AskAiPageProps {
@@ -124,19 +125,46 @@ export const AskAiPage: React.FC<AskAiPageProps> = ({ records }) => {
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/gemini/ask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: queryText.trim(),
-          dataset: records,
-        }),
-      });
+      let data: any;
 
-      const data = await response.json();
+      try {
+        const response = await fetch('/api/gemini/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            question: queryText.trim(),
+            dataset: records,
+          }),
+        });
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to process question.');
+        // AI Studio Preview may return index.html for /api routes. Read as text
+        // first so HTML can never crash the UI with "Unexpected token '<'".
+        const rawResponse = await response.text();
+        const trimmedResponse = rawResponse.trim();
+        const isHtml =
+          trimmedResponse.startsWith('<!doctype') ||
+          trimmedResponse.startsWith('<!DOCTYPE') ||
+          trimmedResponse.startsWith('<html');
+
+        if (response.status === 404 || response.status === 405 || isHtml) {
+          throw new Error('Ask AI server route is unavailable in this preview.');
+        }
+
+        try {
+          data = trimmedResponse ? JSON.parse(trimmedResponse) : {};
+        } catch {
+          throw new Error('Ask AI server returned a non-JSON response.');
+        }
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to process question.');
+        }
+      } catch (serverError) {
+        // Keep Q&A usable inside AI Studio preview even when Express /api routes
+        // are not exposed. The fallback calculates answers directly from the
+        // normalized records already restored from IndexedDB.
+        console.warn('Ask AI server unavailable; using local grounded fallback:', serverError);
+        data = answerQuestionLocally(queryText.trim(), records);
       }
 
       const aiMsgId = `ai-${Date.now()}`;
@@ -422,4 +450,3 @@ export const AskAiPage: React.FC<AskAiPageProps> = ({ records }) => {
     </div>
   );
 };
-
