@@ -11,9 +11,215 @@ import {
   Layers,
   Sparkles,
 } from 'lucide-react';
-import { DataSource } from '../../types';
+import { DataSource, RawRow } from '../../types';
 import { parseCSVToRawRows } from '../../utils/dataEngine';
 import { useLanguage } from '../../context/LanguageContext';
+
+class ApiRouteUnavailableError extends Error {}
+
+interface GoogleSheetRef {
+  spreadsheetId: string;
+  gid?: string;
+}
+
+interface GvizResponse {
+  status?: string;
+  errors?: Array<{ message?: string; detailed_message?: string }>;
+  table?: {
+    cols?: Array<{ id?: string; label?: string }>;
+    rows?: Array<{ c?: Array<{ v?: unknown; f?: string | null } | null> }>;
+  };
+}
+
+function extractGoogleSheetRef(value: string): GoogleSheetRef {
+  const input = value.trim();
+  const urlMatch = input.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  const rawIdMatch = /^[a-zA-Z0-9-_]{20,}$/.test(input);
+
+  const spreadsheetId = urlMatch?.[1] || (rawIdMatch ? input : '');
+  if (!spreadsheetId) {
+    throw new Error('Invalid Google Sheets URL or ID. Please paste a standard share link.');
+  }
+
+  let gid: string | undefined;
+  if (urlMatch) {
+    try {
+      const parsed = new URL(input);
+      gid =
+        parsed.searchParams.get('gid') ||
+        parsed.hash.match(/(?:^|[&#])gid=(\d+)/)?.[1] ||
+        undefined;
+    } catch {
+      gid = input.match(/[?#&]gid=(\d+)/)?.[1];
+    }
+  }
+
+  return { spreadsheetId, gid };
+}
+
+function valueToString(value: unknown, formattedValue?: string | null): string {
+  if (formattedValue != null) return formattedValue;
+  if (value == null) return '';
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
+function normalizeColumns(columns: string[]): string[] {
+  const seen = new Map<string, number>();
+
+  return columns.map((column, index) => {
+    const baseName = column.trim() || `Column ${index + 1}`;
+    const count = seen.get(baseName) || 0;
+    seen.set(baseName, count + 1);
+    return count === 0 ? baseName : `${baseName} (${count + 1})`;
+  });
+}
+
+function gvizTableToRows(payload: GvizResponse): { columns: string[]; rows: RawRow[] } {
+  if (payload.status && payload.status !== 'ok') {
+    const details = payload.errors?.[0]?.detailed_message || payload.errors?.[0]?.message;
+    throw new Error(details || 'Google Sheets could not return this spreadsheet. Ensure link sharing is public.');
+  }
+
+  const table = payload.table;
+  if (!table?.cols || !table.rows) {
+    throw new Error('Spreadsheet returned an unexpected response.');
+  }
+
+  const columns = normalizeColumns(
+    table.cols.map((column, index) => column.label || column.id || `Column ${index + 1}`)
+  );
+
+  const rows = table.rows
+    .map((row) => {
+      const result: RawRow = {};
+      columns.forEach((column, index) => {
+        const cell = row.c?.[index];
+        result[column] = cell ? valueToString(cell.v, cell.f) : '';
+      });
+      return result;
+    })
+    .filter((row) => Object.values(row).some((value) => value.trim() !== ''));
+
+  return { columns, rows };
+}
+
+async function fetchSheetThroughApi(sheetUrl: string): Promise<{ columns: string[]; rows: RawRow[] }> {
+  let response: Response;
+
+  try {
+    response = await fetch('/api/sheets/fetch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: sheetUrl }),
+    });
+  } catch {
+    throw new ApiRouteUnavailableError('Google Sheets API route is unavailable.');
+  }
+
+  // A missing API route in an SPA usually returns index.html. Read text first so
+  // an HTML fallback cannot crash the UI with "Unexpected token '<'".
+  const rawResponse = await response.text();
+  const trimmed = rawResponse.trim();
+
+  if (
+    response.status === 404 ||
+    response.status === 405 ||
+    trimmed.startsWith('<!doctype') ||
+    trimmed.startsWith('<!DOCTYPE') ||
+    trimmed.startsWith('<html')
+  ) {
+    throw new ApiRouteUnavailableError('Google Sheets API route returned HTML instead of JSON.');
+  }
+
+  let data: any;
+  try {
+    data = trimmed ? JSON.parse(trimmed) : {};
+  } catch {
+    throw new ApiRouteUnavailableError('Google Sheets API route returned a non-JSON response.');
+  }
+
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to connect Google Sheet.');
+  }
+
+  if (typeof data.rawCsv !== 'string') {
+    throw new ApiRouteUnavailableError('Google Sheets API response is missing CSV data.');
+  }
+
+  return parseCSVToRawRows(data.rawCsv);
+}
+
+function fetchSheetThroughGviz(
+  spreadsheetId: string,
+  gid?: string
+): Promise<{ columns: string[]; rows: RawRow[] }> {
+  return new Promise((resolve, reject) => {
+    const callbackName = `__eventDataHubSheet_${Date.now()}_${Math.random()
+      .toString(36)
+      .slice(2)}`;
+    const script = document.createElement('script');
+    let timeoutId: number | undefined;
+
+    const cleanup = () => {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      script.remove();
+      delete (window as any)[callbackName];
+    };
+
+    (window as any)[callbackName] = (payload: GvizResponse) => {
+      try {
+        resolve(gvizTableToRows(payload));
+      } catch (error) {
+        reject(error);
+      } finally {
+        cleanup();
+      }
+    };
+
+    const query = new URLSearchParams();
+    query.set('tqx', `responseHandler:${callbackName}`);
+    query.set('headers', '1');
+    if (gid) query.set('gid', gid);
+
+    script.src = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?${query.toString()}`;
+    script.async = true;
+    script.onerror = () => {
+      cleanup();
+      reject(
+        new Error(
+          'Unable to access Google Sheet. Ensure the spreadsheet is public and try again.'
+        )
+      );
+    };
+
+    timeoutId = window.setTimeout(() => {
+      cleanup();
+      reject(new Error('Google Sheet request timed out. Please try again.'));
+    }, 15000);
+
+    document.head.appendChild(script);
+  });
+}
+
+async function loadPublicGoogleSheet(
+  sheetUrl: string
+): Promise<{ columns: string[]; rows: RawRow[] }> {
+  const { spreadsheetId, gid } = extractGoogleSheetRef(sheetUrl);
+
+  try {
+    return await fetchSheetThroughApi(sheetUrl);
+  } catch (error) {
+    if (!(error instanceof ApiRouteUnavailableError)) {
+      throw error;
+    }
+
+    // AI Studio/Vite previews can occasionally serve the SPA HTML for /api
+    // requests. Google Visualization supports a JSONP response handler for
+    // public Sheets, so use it as a browser-safe fallback.
+    return fetchSheetThroughGviz(spreadsheetId, gid);
+  }
+}
 
 interface DataSourcesPageProps {
   sources: DataSource[];
@@ -43,19 +249,7 @@ export const DataSourcesPage: React.FC<DataSourcesPageProps> = ({
     setErrorMsg('');
 
     try {
-      const res = await fetch('/api/sheets/fetch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: sheetUrl }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to connect Google Sheet.');
-      }
-
-      const { columns, rows } = parseCSVToRawRows(data.rawCsv);
+      const { columns, rows } = await loadPublicGoogleSheet(sheetUrl);
 
       if (columns.length === 0 || rows.length === 0) {
         throw new Error('Spreadsheet appears to be empty or unreadable.');
@@ -306,4 +500,3 @@ export const DataSourcesPage: React.FC<DataSourcesPageProps> = ({
     </div>
   );
 };
-
