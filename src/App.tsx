@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { DashboardPage } from './components/pages/DashboardPage';
@@ -21,6 +21,17 @@ import {
   detectDuplicateParticipants,
   generateCalculatedAIInsights,
 } from './utils/dataEngine';
+import {
+  loadWorkspaceFromIndexedDb,
+  saveWorkspaceToIndexedDb,
+} from './utils/indexedDb';
+
+function calculateInsights(sources: DataSource[], mappings: FieldMapping[]): AIInsight[] {
+  const workspaceRecords = applyMappingsToSources(sources, mappings);
+  const workspaceOrgs = detectDuplicateOrganizations(workspaceRecords);
+  const workspaceParticipants = detectDuplicateParticipants(workspaceRecords);
+  return generateCalculatedAIInsights(workspaceRecords, workspaceOrgs, workspaceParticipants);
+}
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<string>('dashboard');
@@ -34,6 +45,7 @@ export default function App() {
   const [isNormalized, setIsNormalized] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
+  const [isStorageHydrated, setIsStorageHydrated] = useState(false);
 
   // Derived Consolidated Dataset
   const records = useMemo(() => {
@@ -51,8 +63,55 @@ export default function App() {
 
   // AI Executive Insights State
   const [insights, setInsights] = useState<AIInsight[]>(() =>
-    generateCalculatedAIInsights(records, orgGroups, participantGroups)
+    calculateInsights(INITIAL_DEMO_SOURCES, getDefaultMappingsForSources(INITIAL_DEMO_SOURCES))
   );
+
+  // Restore the last workspace from IndexedDB after the browser app starts.
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrateWorkspace = async () => {
+      try {
+        const persisted = await loadWorkspaceFromIndexedDb();
+        if (cancelled || !persisted) return;
+
+        const restoredMappings = persisted.mappings.length
+          ? persisted.mappings
+          : getDefaultMappingsForSources(persisted.sources);
+
+        setSources(persisted.sources);
+        setMappings(restoredMappings);
+        setIsNormalized(persisted.isNormalized);
+        setInsights(calculateInsights(persisted.sources, restoredMappings));
+      } catch (error) {
+        // IndexedDB can be disabled by browser/privacy settings. The app should
+        // remain usable in memory instead of failing to start.
+        console.warn('IndexedDB workspace restore skipped:', error);
+      } finally {
+        if (!cancelled) setIsStorageHydrated(true);
+      }
+    };
+
+    hydrateWorkspace();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Persist imported sources (including fullRows), mappings and normalization
+  // state. Writes are serialized inside indexedDb.ts to avoid stale saves.
+  useEffect(() => {
+    if (!isStorageHydrated) return;
+
+    saveWorkspaceToIndexedDb({
+      sources,
+      mappings,
+      isNormalized,
+    }).catch((error) => {
+      console.warn('IndexedDB workspace save skipped:', error);
+    });
+  }, [sources, mappings, isNormalized, isStorageHydrated]);
 
   // Reset / Load Demo Dataset Handler
   const handleLoadDemo = () => {
@@ -60,11 +119,7 @@ export default function App() {
     const demoMappings = getDefaultMappingsForSources(INITIAL_DEMO_SOURCES);
     setMappings(demoMappings);
     setIsNormalized(true);
-
-    const freshRecords = applyMappingsToSources(INITIAL_DEMO_SOURCES, demoMappings);
-    const freshOrgs = detectDuplicateOrganizations(freshRecords);
-    const freshParts = detectDuplicateParticipants(freshRecords);
-    setInsights(generateCalculatedAIInsights(freshRecords, freshOrgs, freshParts));
+    setInsights(calculateInsights(INITIAL_DEMO_SOURCES, demoMappings));
   };
 
   // Add Custom Google Sheet Source
@@ -110,7 +165,23 @@ export default function App() {
         body: JSON.stringify({ sources: targetSources }),
       });
 
-      const data = await response.json();
+      const rawResponse = await response.text();
+      const trimmedResponse = rawResponse.trim();
+
+      if (
+        trimmedResponse.startsWith('<!doctype') ||
+        trimmedResponse.startsWith('<!DOCTYPE') ||
+        trimmedResponse.startsWith('<html')
+      ) {
+        throw new Error('Gemini API route is unavailable in this preview. Using the existing heuristic mappings.');
+      }
+
+      let data: any = {};
+      try {
+        data = trimmedResponse ? JSON.parse(trimmedResponse) : {};
+      } catch {
+        throw new Error('Gemini schema endpoint returned an invalid response.');
+      }
 
       if (!response.ok) {
         throw new Error(data.error || 'Gemini schema analysis failed.');
@@ -175,7 +246,22 @@ export default function App() {
         body: JSON.stringify({ datasetMetrics }),
       });
 
-      const data = await res.json();
+      const rawResponse = await res.text();
+      const trimmedResponse = rawResponse.trim();
+
+      if (
+        trimmedResponse.startsWith('<!doctype') ||
+        trimmedResponse.startsWith('<!DOCTYPE') ||
+        trimmedResponse.startsWith('<html')
+      ) {
+        throw new Error('Insights API route is unavailable in this preview.');
+      }
+
+      const data = trimmedResponse ? JSON.parse(trimmedResponse) : {};
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to refresh AI insights.');
+      }
+
       if (data.insights && Array.isArray(data.insights) && data.insights.length > 0) {
         setInsights(
           data.insights.map((ins: any, idx: number) => ({
